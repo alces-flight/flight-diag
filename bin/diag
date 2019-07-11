@@ -35,6 +35,15 @@ require 'ostruct'
 require 'logger'
 require 'fileutils'
 
+begin
+  require 'openflight/banner'
+rescue LoadError
+  nil
+end
+
+VERSION = '2019.1'
+PROGRAM_NAME = ENV.fetch('FLIGHT_PROGRAM_NAME','diag')
+
 PrivilegeError = Class.new(RuntimeError)
 
 def logger
@@ -298,16 +307,23 @@ def help(repl_context = false, c = nil)
 
   SYNOPSIS
 
-    #{repl_context ? '' : 'diag '}#{cmd_name}#{command_requires_user?(cmd) ? ':USER' : ''} [OPTION...] [ARG...]
+    #{repl_context ? '' : "#{PROGRAM_NAME} "}#{cmd_name}#{command_requires_user?(cmd) ? ':USER' : ''} [OPTION...] [ARG...]
 
   DESCRIPTION:
 
-    #{(cmd.help || "No description provided. Try '#{repl_context ? '' : 'diag '}#{cmd_name}#{command_requires_user?(cmd) ? ':USER' : ''} --help'.").split("\n").join("\n    ")}
+    #{(cmd.help || "No description provided. Try '#{repl_context ? '' : "#{PROGRAM_NAME} "}#{cmd_name}#{command_requires_user?(cmd) ? ':USER' : ''} --help'.").split("\n").join("\n    ")}
 #{cmd.examples ? "\n  EXAMPLES:\n\n    " + cmd.examples.split("\n").join("\n    ") + "\n" : ''}
 EOF
   else
+    if !repl_context
+      begin
+        puts OpenFlight::Banner.render(title: 'Flight Diagnostics', version: VERSION)
+      rescue
+        nil
+      end
+    end
     puts <<EOF
-Usage: #{repl_context ? '' : 'diag '}COMMAND [OPTION...] [ARG...]
+Usage: #{repl_context ? '' : "#{PROGRAM_NAME} "}COMMAND [OPTION...] [ARG...]
 Perform diagnostic activities.
 
 User commands:
@@ -344,7 +360,7 @@ EOF
     puts <<EOF
 
 For more help on a particular command run:
-  #{repl_context ? '' : 'diag '}help COMMAND
+  #{repl_context ? '' : "#{PROGRAM_NAME} "}help COMMAND
 
 Please report bugs to <flight@openflighthpc.org>
 OpenFlight home page: <https://openflighthpc.org/>
@@ -378,7 +394,7 @@ def process(params, repl_context = false)
       cmd = command(cmd_name)
       if unavailable_command?(cmd)
         msg = "flight diag: privileged command '#{c}' is unavailable.".tap do |s|
-          s << " Try 'sudo diag #{c}'." unless repl_context
+          s << " Try 'sudo #{PROGRAM_NAME} #{c}'." unless repl_context
         end
         puts msg
       elsif command_requires_user?(cmd) && user.nil?
@@ -405,6 +421,11 @@ def repl
 
   prompt = 'flight diag> '
 
+  begin
+    puts OpenFlight::Banner.render(title: 'Flight Diagnostics', version: VERSION)
+  rescue
+    nil
+  end
   begin
     while line = Readline.readline(prompt, true)
       line.strip!
