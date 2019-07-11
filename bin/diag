@@ -1,0 +1,449 @@
+#!/usr/bin/env ruby
+#==============================================================================
+# Copyright (C) 2019-present Alces Flight Ltd.
+#
+# This file is part of Flight Diagnostics.
+#
+# This program and the accompanying materials are made available under
+# the terms of the Eclipse Public License 2.0 which is available at
+# <https://www.eclipse.org/legal/epl-2.0>, or alternative license
+# terms made available by Alces Flight Ltd - please direct inquiries
+# about licensing to licensing@alces-flight.com.
+#
+# Flight Diagnostics is distributed in the hope that it will be useful, but
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, EITHER EXPRESS OR
+# IMPLIED INCLUDING, WITHOUT LIMITATION, ANY WARRANTIES OR CONDITIONS
+# OF TITLE, NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A
+# PARTICULAR PURPOSE. See the Eclipse Public License 2.0 for more
+# details.
+#
+# You should have received a copy of the Eclipse Public License 2.0
+# along with Flight Diagnostics. If not, see:
+#
+#  https://opensource.org/licenses/EPL-2.0
+#
+# For more information on <project>, please visit:
+# https://github.com/openflighthpc/flight-diagnostics
+#==============================================================================
+require 'readline'
+require 'pathname'
+require 'abbrev'
+require 'shellwords'
+require 'etc'
+require 'yaml'
+require 'ostruct'
+require 'logger'
+require 'fileutils'
+
+PrivilegeError = Class.new(RuntimeError)
+
+def logger
+  @logger ||=
+    begin
+      file = File.open(log_file, 'a')
+      Logger.new(file, level: Logger::INFO, progname: 'diag')
+    end
+end
+
+def uid_for(uname)
+  Etc.getpwnam(uname).uid
+end
+
+def gid_for(gname)
+  Etc.getgrnam(gname).gid
+end
+
+def load_history(filepath)
+  filepath.readlines.each { |line| Readline::HISTORY << line.chomp  } if filepath.file?
+end
+
+def save_history(filepath)
+  filepath.parent.mkpath unless filepath.parent.directory?
+  filepath.open('w') do |f|
+    Readline::HISTORY.each {|l| f.puts l unless l.empty? }
+  end
+end
+
+def commands
+  @commands ||= []
+end
+
+def user_commands
+  commands.reject do |c|
+    cmd = command(c)
+    cmd.user || cmd.group
+  end.sort
+end
+
+def superuser_commands
+  commands.select do |c|
+    cmd = command(c)
+    cmd.user || cmd.group
+  end.sort
+end
+
+def load_commands
+  Dir.glob(
+    File.join(
+      command_filepath,
+      '*'
+    )
+  ).each do |cmd|
+    name = File.basename(cmd)
+    begin
+      command_metadata[name] = OpenStruct.new(
+        YAML.load(
+          ''.tap do |md|
+            File.readlines(cmd).each do |s|
+              md << s[3..-1] if s =~ /^#: /
+            end
+          end
+        ).merge!(name: name)
+      )
+      commands << name
+    rescue
+      puts "flight diag: '#{name}': unable to parse: #{$!.message}"
+    end
+  end
+end
+
+def command_metadata
+  @command_metadata ||= {}
+end
+
+def command(c)
+  command_metadata[c]
+end
+
+def log_file
+  if Process.euid == 0
+    FileUtils.mkdir_p(log_filepath)
+    File.join(
+      log_filepath,
+      'flight-diag.log',
+    )
+  else
+    File.join(ENV['HOME'], '.flight-diag.log')
+  end
+end
+
+def config
+  @config ||= begin
+                config_data = YAML.load_file(config_file) rescue {}
+                OpenStruct.new(config_data)
+              end
+end
+
+def config_file
+  File.join(
+    __dir__,
+    '..',
+    'etc',
+    'config.yml'
+  )
+end
+
+def log_filepath
+  config.log_filepath ||
+    File.join(
+      __dir__,
+      '..',
+      'var',
+      'log',
+    )
+end
+
+def command_filepath
+  File.join(
+    __dir__,
+    '..',
+    'libexec',
+  )
+end
+
+def assert_exists(user, group)
+  if user
+    begin
+      uid_for(user)
+    rescue
+      raise PrivilegeError, "unable to find user: #{user}"
+    end
+  end
+  if group
+    begin
+      gid_for(group)
+    rescue
+      raise PrivilegeError, "unable to find group: #{group}"
+    end
+  end
+end
+
+def assert_non_system(user, group)
+  if user && user != 'nobody' && uid_for(user) < 1000
+    raise PrivilegeError, "unable to impersonate system user: #{user}"
+  end
+  if group && group != 'nobody' && gid_for(group) < 1000
+    raise PrivilegeError, "unable to impersonate system group: #{group}"
+  end
+end
+
+def assert_dropped_privs
+  begin
+    Process::Sys.setuid(0)
+  rescue Errno::EPERM
+    nil
+  else
+    raise PrivilegeError, "unable to drop privileges"
+  end
+end
+
+def setup_bash_funcs(h, fileno)
+  h['BASH_FUNC_flight_diag_comms()'] = <<EOF
+() { local msg=$1
+ shift
+ if [ "$1" ]; then
+ echo "${msg}:$*" 1>&#{fileno};
+ else
+ cat | sed "s/^/${msg}:/g" 1>&#{fileno};
+ fi
+}
+EOF
+  h['BASH_FUNC_diag_err()'] = "() { flight_diag_comms ERR \"$@\"\n}"
+  h['BASH_FUNC_diag_log()'] = "() { flight_diag_comms LOG \"$@\"\n}"
+  h['BASH_FUNC_diag_echo()'] = "() { flight_diag_comms LOG \"$@\"\necho \"$@\"\n}"
+end
+
+def set_privs(cmd_name, user, wr)
+  cmd = command(cmd_name)
+  if Process.euid == 0 && cmd.user != 'root'
+    if command_requires_user?(cmd)
+      group = user
+    else
+      user = cmd.user
+      group = cmd.group
+    end
+    assert_exists(user, group)
+    assert_non_system(user, group) if command_requires_user?(cmd)
+    user ||= 'nobody'
+    group ||= 'nobody'
+    wr.write("LOG:assuming user: #{user} group: #{group}\n")
+    Process.initgroups(user, gid_for('nobody'))
+    Process::Sys.setgid(gid_for(group))
+    Process::Sys.setuid(uid_for(user))
+    assert_dropped_privs
+  elsif group && !Process.groups.include?(gid_for(group))
+    raise PrivilegeError, "unable to setgid to #{group}"
+  elsif user && Process.euid != uid_for(user)
+    raise PrivilegeError, "unable to setuid to #{user}"
+  else
+    wr.write("LOG:retaining user privileges for: #{user}\n")
+  end
+end
+
+def run(params)
+  if ENV['SUDO_USER']
+    logger.info("Operator (via sudo): #{ENV['SUDO_USER']}")
+  else
+    logger.info("Operator: #{ENV['USER']}")
+  end
+  c = params.first
+  cmd_name, user = c.split(':')
+  Signal.trap('INT','IGNORE')
+  logger.info("Running: #{params.inspect}")
+  rd, wr = IO.pipe
+  pid = fork {
+    rd.close
+    Signal.trap('INT','DEFAULT')
+    begin
+      set_privs(cmd_name, user, wr)
+      exe = File.join(command_filepath, cmd_name)
+      args = [exe, *(params[1..-1])]
+      wr.write("LOG:exec: #{args.inspect}\n")
+      wr.close_on_exec = false
+      setup_bash_funcs(ENV, wr.fileno)
+      args.unshift('/bin/bash') if !File.stat(exe).executable?
+      exec(*args)
+    rescue PrivilegeError
+      wr.write("ERR:#{params.first}: #{$!.message}\n")
+      exit(1)
+    rescue Interrupt
+      nil
+    ensure
+      logger.close
+    end
+  }
+  wr.close
+  while !rd.eof?
+    line = rd.readline
+    if line =~ /^LOG:/
+      logger.info("<#{pid}> #{line[4..-2]}")
+    elsif line =~ /^ERR:/
+      logger.error("<#{pid}> #{line[4..-2]}")
+      puts "flight diag: #{line[4..-2]}"
+    end
+  end
+  pid, status = Process.wait2(pid)
+  logger.info(status)
+  Signal.trap('INT','DEFAULT')
+end
+
+def help(repl_context = false, c = nil)
+  cmd_name, user = (c || '').split(':')
+  if commands.include?(cmd_name)
+    cmd = command(cmd_name)
+    puts <<EOF
+  NAME:
+
+    #{cmd_name}#{cmd.synopsis ? ' - ' + cmd.synopsis + '.' : ''}
+
+  SYNOPSIS
+
+    #{repl_context ? '' : 'diag '}#{cmd_name}#{command_requires_user?(cmd) ? ':USER' : ''} [OPTION...] [ARG...]
+
+  DESCRIPTION:
+
+    #{(cmd.help || "No description provided. Try '#{repl_context ? '' : 'diag '}#{cmd_name}#{command_requires_user?(cmd) ? ':USER' : ''} --help'.").split("\n").join("\n    ")}
+#{cmd.examples ? "\n  EXAMPLES:\n\n    " + cmd.examples.split("\n").join("\n    ") + "\n" : ''}
+EOF
+  else
+    puts <<EOF
+Usage: #{repl_context ? '' : 'diag '}COMMAND [OPTION...] [ARG...]
+Perform diagnostic activities.
+
+User commands:
+EOF
+    user_commands.each do |c|
+      printf("  %-20s %s\n", c, command(c).synopsis || '(no synopsis)')
+    end
+    puts <<EOF
+
+Privileged commands:
+EOF
+    superuser_commands.each do |c|
+      cmd = command(c)
+      c += ':USER' if command_requires_user?(cmd)
+      privilege = '('.tap do |s|
+        s << [].tap do |a|
+          if cmd.user
+            a << (command_requires_user?(cmd) ? 'supplied user' : cmd.user)
+          end
+          a << "group:#{cmd.group}" if cmd.group
+        end.join('/')
+      end << ')'
+      printf("  %-20s %s %s\n", c, privilege, cmd.synopsis || '(no synopsis)')
+    end
+    if repl_context
+      puts <<EOF
+
+Interactive commands:
+  exit                 Exit the shell
+  history              Show command history
+EOF
+      #  ssh                  Open diag on a remote node
+    end
+    puts <<EOF
+
+For more help on a particular command run:
+  #{repl_context ? '' : 'diag '}help COMMAND
+
+Please report bugs to <flight@openflighthpc.org>
+OpenFlight home page: <https://openflighthpc.org/>
+EOF
+  end
+end
+
+def valid_command?(cmd)
+  commands.include?(cmd)
+end
+
+def unavailable_command?(cmd)
+  Process.euid != 0 &&
+    ( command_requires_user?(cmd) ||
+      superuser_commands.include?(cmd.name) )
+end
+
+def command_requires_user?(cmd)
+  cmd.user == :supply
+end
+
+def process(params, repl_context = false)
+  c = params.first
+  if c == 'history' && repl_context
+    puts Readline::HISTORY.to_a
+  elsif c == 'help'
+    help(repl_context, params[1])
+  else
+    cmd_name, user = c.split(':')
+    if valid_command?(cmd_name)
+      cmd = command(cmd_name)
+      if unavailable_command?(cmd)
+        msg = "flight diag: privileged command '#{c}' is unavailable.".tap do |s|
+          s << " Try 'sudo diag #{c}'." unless repl_context
+        end
+        puts msg
+      elsif command_requires_user?(cmd) && user.nil?
+        puts "flight diag: '#{cmd_name}' requires specification of a user, e.g. '#{cmd_name}:fred'. See 'help'."
+      else
+        run(params)
+      end
+    else
+      puts "flight diag: '#{c}' is not a known command. See 'help'."
+    end
+  end
+end
+
+def repl
+  history_filepath = Pathname.new(File.join(ENV['HOME'], '.flight_diag_history'))
+  load_history history_filepath
+  Readline.completion_proc = lambda do |val|
+    if Readline.line_buffer.include?(' ')
+      nil
+    else
+      commands.grep( /^#{Regexp.escape(val)}/ )
+    end
+  end
+
+  prompt = 'flight diag> '
+
+  begin
+    while line = Readline.readline(prompt, true)
+      line.strip!
+      if line == 'exit' || line == 'quit'
+        break
+      elsif line =~ /^\s*$/
+        # Remove blank lines from history
+        Readline::HISTORY.pop
+      else
+        # prevent duplicates
+        if Readline::HISTORY.length > 1 && Readline::HISTORY[-2] == line
+          Readline::HISTORY.pop
+        end
+        begin
+          process(Shellwords.split(line), true)
+        rescue ArgumentError
+          puts "flight diag: #{$!.message}"
+        end
+      end
+    end
+  rescue Interrupt
+    system("stty echo")
+    puts ""
+    retry
+  end
+ensure
+  logger.close
+  save_history history_filepath
+end
+
+ENV['LESSSECURE'] = '1'
+load_commands
+if ARGV.empty?
+  repl
+else
+  begin
+    process(ARGV, false)
+  rescue Interrupt
+    logger.close
+    system("stty echo")
+  end
+end

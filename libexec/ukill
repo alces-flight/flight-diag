@@ -1,0 +1,97 @@
+#!/bin/bash
+###############################################################################
+#: synopsis: Kill user processes
+#: user: root
+#: help: |
+#:   The ukill command allows access to terminate user processes. The
+#:   utility can either terminate a specific PID or all processes for a
+#:   specified user.
+#:   
+#:   Superuser (root) processes and other processes operated by system
+#:   users (UID < 1000) cannot be affected.
+#:   
+#:   Requires administrative access.
+#:   
+#:   See 'ukill --help' for more details.
+#: examples: |
+#:     ukill -u fred
+#:     ukill -s KILL -p 12552
+###############################################################################
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+while getopts ":p:u:s:" opt; do
+  case "$opt" in
+    p)
+      PID=$OPTARG
+      ;;
+    u)
+      UNAME=$OPTARG
+      ;;
+    s)
+      SIG=$OPTARG
+      ;;
+    \?)
+      valid=0
+      ;;
+    :)
+      valid=0
+      ;;
+  esac
+done
+
+if [[ -n $PID && -n $UNAME ]]; then
+  diag_err "ukill: incompatible options found: specify one of PID or user"
+  exit 1
+elif [[ $valid == "0" || -z "$PID" && -z "$UNAME" ]]; then
+  cat <<EOF
+usage: kill [-s <signal>] -p <pid>
+   or: kill [-s <signal>] -u <user>
+EOF
+  exit 1
+fi
+
+SIG=${SIG:-TERM}
+
+if [[ -n $UNAME ]]; then
+  uid=$(id -u $UNAME 2>/dev/null)
+  if [[ -z "$uid" ]]; then
+    diag_err "ukill: user not found: ${UNAME}"
+    exit 1
+  elif [[ $uid == 0 || $uid -lt 1000 ]]; then
+    diag_err "ukill: unable to kill processes for system user: ${UNAME}"
+    exit 1
+  fi
+  pids=($(pgrep -u "${UNAME}"))
+  if [ "${#pids[*]}" -gt 0 ]; then
+    diag_echo "ukill: executing command: kill --signal '${SIG}' ${pids[@]}"
+    /bin/kill "--signal" "${SIG}" ${pids[@]}
+    rc=$?
+    if [ $rc -gt 0 ]; then
+      diag_err "ukill: failed to kill processes for user: ${UNAME}"
+    fi
+    exit $rc
+  else
+    diag_err "ukill: no processes found for user: ${UNAME}"
+    exit 1
+  fi
+fi
+
+found=$(ps -p $PID -w -o pid,ruser | tail -n1)
+found_pid=$(echo "$found" | awk '{print $1}')
+if [[ -z "$found_pid" || "$found_pid" == "PID" ]]; then
+  diag_echo "ukill: process not found: ${PID}"
+  exit 1
+fi
+UNAME=$(echo "$found" | awk '{print $2}')
+uid=$(id -u $UNAME)
+if [[ $uid == 0 || $uid -lt 1000 ]]; then
+  diag_err "ukill: unable to kill process ($PID) owned by system user: ${UNAME}"
+  exit 1
+fi
+
+diag_echo "ukill: executing command: kill --signal '${SIG}' '${PID}'"
+/bin/kill "--signal" "${SIG}" "${PID}" 2>/dev/null
+rc=$?
+if [ $rc -gt 0 ]; then
+  diag_err "ukill: failed to kill process: ${PID}"
+fi
+exit $rc

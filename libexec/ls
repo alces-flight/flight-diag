@@ -1,0 +1,13 @@
+#!/bin/bash
+###############################################################################
+#: synopsis: Access file listings via ls
+#: help: |
+#:   Convenience helper providing access to the 'ls' command while in
+#:   interactive mode.
+#:   
+#:   Does not require administrative access.
+#:   
+#:   See 'ls --help' for more details.
+###############################################################################
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+ls "$@"

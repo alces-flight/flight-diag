@@ -1,0 +1,13 @@
+#!/bin/bash
+###############################################################################
+#: synopsis: Access process listings via ps
+#: help: |
+#:   Convenience helper providing access to the 'ps' command while in
+#:   interactive mode.
+#:   
+#:   Does not require administrative access.
+#:   
+#:   See 'ps --help' for more details.
+###############################################################################
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+ps "$@"

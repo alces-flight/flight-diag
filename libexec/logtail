@@ -1,0 +1,42 @@
+#!/bin/bash
+###############################################################################
+#: synopsis: Tail a file from /var/log
+#: user: root
+#: help: |
+#:   The logtail command allows access to log files held in /var/log for
+#:   display via 'tail -f' (i.e. to continually display the most recent
+#:   writes to the file). File names may be supplied as fully-qualified
+#:   path names (i.e. prefixed with /var/log) or relative path names
+#:   (/var/log will be automatically applied).
+#:   
+#:   Requires administrative access.
+#: examples: |
+#:     logtail messages
+#:     logtail /var/log/cron /var/log/maillog
+###############################################################################
+PROGNAME="$(basename "$0")"
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+
+if [ -z "$1" ]; then
+  echo "Usage: $PROGNAME FILE..."
+  exit 1
+else
+  files=()
+  for a in "$@"; do
+    if [[ "$a" == "/var/log/"* ]]; then
+      if [ -f "$a" ]; then
+        files+=("$a")
+      else
+        diag_err "$PROGNAME: file not found: $a"
+        exit 1
+      fi
+    elif [ -f "/var/log/$a" ]; then
+      files+=("/var/log/$a")
+    else
+      diag_err "$PROGNAME: file not found: /var/log/$a"
+      exit 1
+    fi
+  done
+  diag_log "$PROGNAME: using file list: ${files[@]}"
+  tail -f "${files[@]}"
+fi

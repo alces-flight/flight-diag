@@ -1,0 +1,16 @@
+#!/bin/bash
+###############################################################################
+#: synopsis: Print the kernel ring buffer
+#: help: |
+#:   Convenience helper providing read-only access to the kernel ring buffer.
+#:   
+#:   Does not require administrative access.
+#:   
+#:   See 'dmesg --help' for more details.
+#: examples: |
+#:     dmesg
+#:     dmesg --human
+#:     dmesg --follow
+###############################################################################
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+dmesg "$@"

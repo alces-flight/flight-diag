@@ -1,0 +1,25 @@
+#!/bin/bash
+###############################################################################
+#: synopsis: Print user information for user commands
+#: help: |
+#:   Simple utility to display the current user that diag will operate
+#:   as for user commands.
+#:   
+#:   Does not require administrative access.
+###############################################################################
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+echo "Running as user:"
+diag_log "id: $(id)"
+echo "  id: $(id)"
+echo "  groups: $(groups)"
+echo ""
+echo "Passed arguments:"
+if [ "$1" ]; then
+  c=0
+  for a in "$@"; do
+    c=$(($c+1))
+    echo "  $c: '$a'"
+  done
+else
+  echo "  (None)"
+fi

@@ -1,0 +1,27 @@
+#!/bin/bash
+###############################################################################
+#: synopsis: Print user information for privileged commands
+#: user: :supply
+#: help: |
+#:   Simple utility to display the assumed user that diag will operate
+#:   as for privileged commands that require a user specification.
+#:   
+#:   Requires administrative access and specification of specific (non-system)
+#:   user.
+###############################################################################
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+echo "Running as user:"
+diag_log "id: $(id)"
+echo "  id: $(id)"
+echo "  groups: $(groups)"
+echo ""
+echo "Passed arguments:"
+if [ "$1" ]; then
+  c=0
+  for a in "$@"; do
+    c=$(($c+1))
+    echo "  $c: '$a'"
+  done
+else
+  echo "  (None)"
+fi
