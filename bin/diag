@@ -34,6 +34,7 @@ require 'yaml'
 require 'ostruct'
 require 'logger'
 require 'fileutils'
+require 'socket'
 
 begin
   require 'openflight/banner'
@@ -45,11 +46,13 @@ VERSION = '2019.1'
 PROGRAM_NAME = ENV.fetch('FLIGHT_PROGRAM_NAME','diag')
 
 PrivilegeError = Class.new(RuntimeError)
+ConfigError = Class.new(RuntimeError)
 
 def logger
   @logger ||=
     begin
       file = File.open(log_file, 'a')
+      file.sync = true
       Logger.new(file, level: Logger::INFO, progname: 'diag')
     end
 end
@@ -60,6 +63,10 @@ end
 
 def gid_for(gname)
   Etc.getgrnam(gname).gid
+end
+
+def home_directory_for(uname)
+  Etc.getpwnam(uname).dir
 end
 
 def load_history(filepath)
@@ -111,7 +118,7 @@ def load_commands
       )
       commands << name
     rescue
-      puts "flight diag: '#{name}': unable to parse: #{$!.message}"
+      $stderr.puts "flight diag: '#{name}': unable to parse: #{$!.message}"
     end
   end
 end
@@ -249,14 +256,72 @@ def set_privs(cmd_name, user, wr)
   end
 end
 
-def run(params)
+def hostname
+  @hostname ||= Socket.gethostname.split('.').first
+end
+
+def domainname
+  @domainname ||= (
+    config.domain_name ||
+    Socket.gethostname.split('.')[2..-1].tap do |a|
+      if a.nil?
+        raise ConfigError, "could not determine domain name (try setting 'domain_name' in configuration)"
+      end
+    end.join('.')
+  )
+end
+
+def log_operator
   if ENV['SUDO_USER']
-    logger.info("Operator (via sudo): #{ENV['SUDO_USER']}")
+    logger.info("Operator (via sudo): #{ENV['SUDO_USER']}@#{hostname}")
   else
-    logger.info("Operator: #{ENV['USER']}")
+    logger.info("Operator: #{ENV['USER']}@#{hostname}")
   end
-  c = params.first
-  cmd_name, user = c.split(':')
+end
+
+def remote(params)
+  run_fork(params) do |wr|
+    host = [params[1], domainname].join('.')
+    args = [
+      '/usr/bin/ssh',
+      '-t'
+    ].tap do |a|
+      if Process.euid == 0
+        a << '-l'
+        a << (config.remote_diag_user || ENV['SUDO_USER'] || 'siteadmin')
+      end
+      a << host
+      a << '/usr/bin/sudo' if Process.euid == 0
+      a << (config.remote_diag_path || File.join(__dir__, 'diag'))
+      a << '--remote'
+      a.concat(params[2..-1])
+    end
+    wr.write("LOG:exec: #{args.inspect}\n")
+    if Process.euid == 0
+      if !config.remote_from_root
+        user = ENV['SUDO_USER'] || config.remote_diag_user
+        if user.nil?
+          raise PrivilegeError, 'remote access from root disabled but user could not be determined'
+        end
+        wr.write("LOG:assuming user for remote access: #{user}\n")
+        Process.initgroups(user, gid_for('nobody'))
+        Process::Sys.setgid(gid_for('nobody'))
+        Process::Sys.setuid(uid_for(user))
+        assert_dropped_privs
+        ENV['HOME'] = home_directory_for(user)
+        wr.write("LOG:set HOME environment variable to: #{ENV['HOME']}\n")
+      else
+        wr.write("LOG:remaining as root for remote access\n")
+      end
+    end
+    $stderr.puts "[Opening remote connection to #{host}]"
+    system(*args)
+    $stderr.puts "[Closed remote connection to #{host}]"
+  end
+end
+
+def run_fork(params, &block)
+  log_operator
   Signal.trap('INT','IGNORE')
   logger.info("Running: #{params.inspect}")
   rd, wr = IO.pipe
@@ -264,15 +329,8 @@ def run(params)
     rd.close
     Signal.trap('INT','DEFAULT')
     begin
-      set_privs(cmd_name, user, wr)
-      exe = File.join(command_filepath, cmd_name)
-      args = [exe, *(params[1..-1])]
-      wr.write("LOG:exec: #{args.inspect}\n")
-      wr.close_on_exec = false
-      setup_bash_funcs(ENV, wr.fileno)
-      args.unshift('/bin/bash') if !File.stat(exe).executable?
-      exec(*args)
-    rescue PrivilegeError
+      block.call(wr)
+    rescue PrivilegeError, ConfigError
       wr.write("ERR:#{params.first}: #{$!.message}\n")
       exit(1)
     rescue Interrupt
@@ -288,7 +346,7 @@ def run(params)
       logger.info("<#{pid}> #{line[4..-2]}")
     elsif line =~ /^ERR:/
       logger.error("<#{pid}> #{line[4..-2]}")
-      puts "flight diag: #{line[4..-2]}"
+      $stderr.puts "flight diag: #{line[4..-2]}"
     end
   end
   pid, status = Process.wait2(pid)
@@ -296,7 +354,44 @@ def run(params)
   Signal.trap('INT','DEFAULT')
 end
 
+def run(params)
+  run_fork(params) do |wr|
+    c = params.first
+    cmd_name, user = c.split(':')
+    set_privs(cmd_name, user, wr)
+    exe = File.join(command_filepath, cmd_name)
+    args = [exe, *(params[1..-1])]
+    wr.close_on_exec = false
+    setup_bash_funcs(ENV, wr.fileno)
+    args.unshift('/bin/bash') if !File.stat(exe).executable?
+    wr.write("LOG:exec: #{args.inspect}\n")
+    exec(*args, close_others: false)
+  end
+end
+
+def help_remote(repl_context = false)
+  puts <<EOF
+  NAME:
+
+    remote - Run diagnostics on a remote host
+
+  SYNOPSIS:
+
+    #{repl_context ? '' : "#{PROGRAM_NAME} "}remote HOST [COMMAND [OPTION...] [ARG...]]
+
+  DESCRIPTION:
+
+    Execute a diag COMMAND on the specified remote HOST. If no COMMAND
+    is specified, diag will start in interactive mode.
+
+EOF
+end
+
 def help(repl_context = false, c = nil)
+  if config.enable_remote && c == 'remote'
+    help_remote(repl_context)
+    return
+  end
   cmd_name, user = (c || '').split(':')
   if commands.include?(cmd_name)
     cmd = command(cmd_name)
@@ -355,7 +450,13 @@ Interactive commands:
   exit                 Exit the shell
   history              Show command history
 EOF
-      #  ssh                  Open diag on a remote node
+    end
+    if config.enable_remote == true
+      puts <<EOF
+
+To execute diagnostics on a remote host run:
+  #{repl_context ? '' : "#{PROGRAM_NAME} "}remote HOST [COMMAND]
+EOF
     end
     puts <<EOF
 
@@ -382,12 +483,20 @@ def command_requires_user?(cmd)
   cmd.user == :supply
 end
 
-def process(params, repl_context = false)
+def process(params, repl_context = false, remote_context = false)
   c = params.first
   if c == 'history' && repl_context
     puts Readline::HISTORY.to_a
   elsif c == 'help'
     help(repl_context, params[1])
+  elsif config.enable_remote && c == 'remote'
+    if remote_context
+      $stderr.puts "flight diag: 'remote' cannot be used on a remote connection!"
+    elsif params[1].nil?
+      help_remote(repl_context)
+    else
+      remote(params)
+    end
   else
     cmd_name, user = c.split(':')
     if valid_command?(cmd_name)
@@ -396,19 +505,19 @@ def process(params, repl_context = false)
         msg = "flight diag: privileged command '#{c}' is unavailable.".tap do |s|
           s << " Try 'sudo #{PROGRAM_NAME} #{c}'." unless repl_context
         end
-        puts msg
+        $stderr.puts msg
       elsif command_requires_user?(cmd) && user.nil?
-        puts "flight diag: '#{cmd_name}' requires specification of a user, e.g. '#{cmd_name}:fred'. See 'help'."
+        $stderr.puts "flight diag: '#{cmd_name}' requires specification of a user, e.g. '#{cmd_name}:fred'. See 'help'."
       else
         run(params)
       end
     else
-      puts "flight diag: '#{c}' is not a known command. See 'help'."
+      $stderr.puts "flight diag: '#{c}' is not a known command. See 'help'."
     end
   end
 end
 
-def repl
+def repl(remote_context = false)
   history_filepath = Pathname.new(File.join(ENV['HOME'], '.flight_diag_history'))
   load_history history_filepath
   Readline.completion_proc = lambda do |val|
@@ -419,8 +528,12 @@ def repl
     end
   end
 
-  prompt = 'flight diag> '
-
+  su = (Process.euid == 0 ? ' #' : ' $')
+  prompt = if remote_context
+             "(#{hostname}) flight diag#{su}> "
+           else
+             "flight diag#{su}> "
+           end
   begin
     puts OpenFlight::Banner.render(title: 'Flight Diagnostics', version: VERSION)
   rescue
@@ -440,29 +553,36 @@ def repl
           Readline::HISTORY.pop
         end
         begin
-          process(Shellwords.split(line), true)
+          process(Shellwords.split(line), true, remote_context)
         rescue ArgumentError
-          puts "flight diag: #{$!.message}"
+          $stderr.puts "flight diag: #{$!.message}"
         end
       end
     end
   rescue Interrupt
     system("stty echo")
-    puts ""
+    $stderr.puts ""
     retry
   end
 ensure
   logger.close
   save_history history_filepath
+  $stderr.puts ""
 end
 
 ENV['LESSSECURE'] = '1'
 load_commands
-if ARGV.empty?
-  repl
+args = ARGV.dup
+remote = false
+if args.first == '--remote'
+  args.shift
+  remote = true
+end
+if args.empty?
+  repl(remote)
 else
   begin
-    process(ARGV, false)
+    process(args, false, remote)
   rescue Interrupt
     logger.close
     system("stty echo")
