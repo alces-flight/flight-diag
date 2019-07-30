@@ -21,7 +21,7 @@ compromised.
 
 ```
 yum install ruby
-git clone https://github.com/openflighthpc/flight-diag /opt/flight-diag
+git clone https://github.com/alces-flight/flight-diag /opt/flight-diag
 ```
 
 Add some `sudo` configuration, i.e. allow all users in `siteadmin`
@@ -76,8 +76,8 @@ Interactive commands:
 For more help on a particular command run:
   help COMMAND
 
-Please report bugs to <flight@openflighthpc.org>
-OpenFlight home page: <https://openflighthpc.org/>
+Please report bugs to <flight@alces-flight.com>
+Alces Flight home page: <https://alces-flight.com/>
 flight diag> whoami
 Running as user:
   id: uid=1000(myuser) gid=1000(myuser) groups=1000(myuser)
