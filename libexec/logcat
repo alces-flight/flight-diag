@@ -1,23 +1,21 @@
 #!/bin/bash
 ###############################################################################
-#: synopsis: View a file from /var/log (with 'less')
+#: synopsis: View a file from /var/log (with 'cat')
 #: user: root
 #: help: |
-#:   The logview command allows access to view log files held in
-#:   /var/log through the 'less' pager. The supplied file name may be
-#:   specified as a fully-qualified path name (i.e. prefixed with
-#:   /var/log) or a relative path name (/var/log will be automatically
-#:   applied).
+#:   The logcat command allows access to view log files held in
+#:   /var/log through 'cat'. This aids log retrieval for later use. The
+#:   supplied file name may be specified as a fully-qualified path name
+#:   (i.e. prefixed with /var/log) or a relative path name (/var/log
+#;   will be automatically applied).
 #:   
 #:   Requires administrative access.
 #: examples: |
-#:     logview messages
-#:     logview /var/log/cron
+#:     logcat messages
+#:     logcat /var/log/cron
 ###############################################################################
 PROGNAME="$(basename "$0")"
 PATH=/bin:/usr/bin:/sbin:/usr/sbin
-export LESSSECURE=1
-export LESS="${LESS:-RXM}"
 if [ -z "$1" ]; then
   echo "Usage: $PROGNAME <file>"
   exit 1
@@ -25,14 +23,14 @@ else
   if [[ "$1" == "/var/log/"* ]]; then
     if [ -f "$1" ]; then
       diag_log "$PROGNAME: viewing file: $1"
-      less "$1"
+      cat "$1"
     else
       diag_err "$PROGNAME: file not found: $1"
       exit 1
     fi
   elif [ -f "/var/log/$1" ]; then
     diag_log "$PROGNAME: viewing file: /var/log/$1"
-    less "/var/log/$1"
+    cat "/var/log/$1"
   else
     diag_err "$PROGNAME: file not found: /var/log/$1"
     exit 1
