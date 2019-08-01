@@ -136,7 +136,7 @@ def log_file
     FileUtils.mkdir_p(log_filepath)
     File.join(
       log_filepath,
-      'flight-diag.log',
+      "flight-diag.#{hostname}.log",
     )
   else
     File.join(ENV['HOME'], '.flight-diag.log')
@@ -263,7 +263,7 @@ end
 def domainname
   @domainname ||= (
     config.domain_name ||
-    Socket.gethostname.split('.')[2..-1].tap do |a|
+    Socket.gethostname.split('.')[1..-1].tap do |a|
       if a.nil?
         raise ConfigError, "could not determine domain name (try setting 'domain_name' in configuration)"
       end
@@ -292,6 +292,7 @@ def remote(params)
       end
       a << host
       a << '/usr/bin/sudo' if Process.euid == 0
+      a << config.remote_ruby_path if config.remote_ruby_path
       a << (config.remote_diag_path || File.join(__dir__, 'diag'))
       a << '--remote'
       a.concat(params[2..-1])
@@ -315,8 +316,9 @@ def remote(params)
       end
     end
     $stderr.puts "[Opening remote connection to #{host}]"
-    system(*args)
-    $stderr.puts "[Closed remote connection to #{host}]"
+    system(*args).tap do
+      $stderr.puts "[Closed remote connection to #{host}]"
+    end
   end
 end
 
@@ -329,7 +331,11 @@ def run_fork(params, &block)
     rd.close
     Signal.trap('INT','DEFAULT')
     begin
-      block.call(wr)
+      if block.call(wr)
+        exit(0)
+      else
+        exit(1)
+      end
     rescue PrivilegeError, ConfigError
       wr.write("ERR:#{params.first}: #{$!.message}\n")
       exit(1)
@@ -352,6 +358,7 @@ def run_fork(params, &block)
   pid, status = Process.wait2(pid)
   logger.info(status)
   Signal.trap('INT','DEFAULT')
+  status.success?
 end
 
 def run(params)
@@ -582,9 +589,11 @@ if args.empty?
   repl(remote)
 else
   begin
-    process(args, false, remote)
-  rescue Interrupt
+    if !process(args, false, remote)
+      exit(1)
+    end
+  ensure
     logger.close
-    system("stty echo")
+    system("stty echo 2>/dev/null")
   end
 end

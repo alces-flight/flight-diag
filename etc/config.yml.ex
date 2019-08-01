@@ -6,6 +6,8 @@
 #enable_remote: false
 # path to diag binary on remote host (defaults to same path as client system)
 #remote_diag_path: /opt/flight-diag/bin/diag
+# path to ruby binary on remote host (defaults to looking in PATH)
+#remote_ruby_path: /usr/bin/ruby
 # override user for access to diag on remote host (defaults to SUDO_USER)
 #remote_diag_user: siteadmin
 # access remote host from local root account (defaults to SUDO_USER account)
