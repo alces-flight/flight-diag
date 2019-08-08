@@ -22,19 +22,21 @@ if [ -z "$1" ]; then
   echo "Usage: $PROGNAME <file>"
   exit 1
 else
-  if [[ "$1" == "/var/log/"* ]]; then
-    if [ -f "$1" ]; then
-      diag_log "$PROGNAME: viewing file: $1"
-      less "$1"
+  logfile="$1"
+  if [[ ! "$logfile" =~ ^/ ]]; then
+    logfile="/var/log/$logfile"
+  fi
+  logfile=$(realpath --canonicalize-missing --quiet "$logfile")
+  if [[ ! "$logfile" =~ ^/var/log ]]; then
+    diag_err "$PROGNAME: file is not in /var/log: $1"
+    exit 1
+  else 
+    if [ -f "$logfile" ]; then
+      diag_log "$PROGNAME: viewing file: $logfile"
+      less "$logfile"
     else
-      diag_err "$PROGNAME: file not found: $1"
+      diag_err "$PROGNAME: file not found: $logfile"
       exit 1
     fi
-  elif [ -f "/var/log/$1" ]; then
-    diag_log "$PROGNAME: viewing file: /var/log/$1"
-    less "/var/log/$1"
-  else
-    diag_err "$PROGNAME: file not found: /var/log/$1"
-    exit 1
   fi
 fi
