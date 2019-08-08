@@ -23,18 +23,21 @@ if [ -z "$1" ]; then
 else
   files=()
   for a in "$@"; do
-    if [[ "$a" == "/var/log/"* ]]; then
-      if [ -f "$a" ]; then
-        files+=("$a")
+    logfile="$a"
+    if [[ ! "$logfile" =~ ^/ ]]; then
+      logfile="/var/log/$logfile"
+    fi
+    logfile=$(realpath --canonicalize-missing --quiet "$logfile")
+    if [[ ! "$logfile" =~ ^/var/log ]]; then
+      diag_err "$PROGNAME: file is not in /var/log: $a"
+      exit 1
+    else 
+      if [ -f "$logfile" ]; then
+        files+=("$logfile")
       else
-        diag_err "$PROGNAME: file not found: $a"
+        diag_err "$PROGNAME: file not found: $logfile"
         exit 1
       fi
-    elif [ -f "/var/log/$a" ]; then
-      files+=("/var/log/$a")
-    else
-      diag_err "$PROGNAME: file not found: /var/log/$a"
-      exit 1
     fi
   done
   diag_log "$PROGNAME: using file list: ${files[@]}"
